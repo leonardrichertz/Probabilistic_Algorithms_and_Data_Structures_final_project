@@ -1,7 +1,17 @@
 import math
-from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM
+from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM, NUM_VIRTUAL_NODES
 from data_generator import generate_uniform_keys
 from hashing_algorithms import BoundedHashRing_CH_BL, BoundedHashRing_RJ_CH
+import statistics
+
+
+def _jain_index(loads):
+    if not loads:
+        return 0.0
+    s = sum(loads)
+    s2 = sum(l * l for l in loads)
+    n = len(loads)
+    return (s * s) / (n * s2) if s2 > 0 else 0.0
 
 
 def _stats_from_ring(ring, total_keys):
@@ -18,22 +28,63 @@ def _stats_from_ring(ring, total_keys):
     }
 
 
+def _detailed_stats_from_ring(
+    ring, total_keys, total_attempts=0, autoscale_events=None
+):
+    loads = list(ring.server_loads.values())
+    n = len(loads) or 1
+    total_assigned = len(ring.key_assignments)
+    avg = sum(loads) / n if loads else 0
+    var = statistics.pvariance(loads) if loads else 0
+    std = statistics.pstdev(loads) if loads else 0
+    mx = max(loads) if loads else 0
+    loads_sorted = sorted(loads)
+    p95 = loads_sorted[int(0.95 * len(loads_sorted))] if loads else 0
+    percent_full = sum(1 for l in loads if l >= ring.capacity) / n
+    jain = _jain_index(loads)
+    imbalance = mx / avg if avg > 0 else float("inf")
+    avg_attempts = total_attempts / max(1, total_assigned)
+
+    return {
+        "assigned": total_assigned,
+        "total_keys": total_keys,
+        "num_servers": n,
+        "avg_load": avg,
+        "stddev": std,
+        "variance": var,
+        "max_load": mx,
+        "p95_load": p95,
+        "percent_full": percent_full,
+        "jain_index": jain,
+        "imbalance_ratio": imbalance,
+        "avg_attempts": avg_attempts,
+        "autoscale_events": autoscale_events or {"added": 0, "removed": 0},
+        "loads": loads,
+    }
+
+
 def run_fixed_k_ch(keys):
     ring = BoundedHashRing_CH_BL(capacity=SERVER_CAPACITY)
     for i in range(NUM_SERVERS):
         ring.add_server(f"S{i}")
+    total_attempts = 0
     for k in keys:
-        ring.assign_key(k)
-    return _stats_from_ring(ring, len(keys))
+        _, cost = ring.assign_key(k)
+        total_attempts += cost
+    return _detailed_stats_from_ring(ring, len(keys), total_attempts)
 
 
 def run_fixed_k_rj(keys):
-    ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY, max_attempts=50)
+    ring = BoundedHashRing_RJ_CH(
+        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
+    )
     for i in range(NUM_SERVERS):
         ring.add_server(f"S{i}")
+    total_attempts = 0
     for k in keys:
-        ring.assign_key(k)
-    return _stats_from_ring(ring, len(keys))
+        _, cost = ring.assign_key(k)
+        total_attempts += cost
+    return _detailed_stats_from_ring(ring, len(keys), total_attempts)
 
 
 def run_dynamic_k_rj(
@@ -45,15 +96,21 @@ def run_dynamic_k_rj(
 ):
     min_servers = min_servers or max(2, NUM_SERVERS // 2)
     max_servers = max_servers or NUM_SERVERS
-    ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY, max_attempts=50)
+    ring = BoundedHashRing_RJ_CH(
+        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
+    )
     # start with a small cluster
     for i in range(min_servers):
         ring.add_server(f"S{i}")
     next_server_id = min_servers
+    autoscale = {"added": 0, "removed": 0}
+    total_attempts = 0
 
     for k in keys:
-        ring.assign_key(k)
-        # autoscale up: if any server >= up threshold and we can add
+        _, cost = ring.assign_key(k)
+        total_attempts += cost
+
+        # autoscale up
         loads = list(ring.server_loads.values()) or [0]
         if (
             max(loads) >= math.ceil(SERVER_CAPACITY * up_thresh_ratio)
@@ -61,20 +118,23 @@ def run_dynamic_k_rj(
         ):
             ring.add_server(f"S{next_server_id}")
             next_server_id += 1
-        # autoscale down: if all servers below down threshold and we have > min
-        loads = list(ring.server_loads.items())
+            autoscale["added"] += 1
+
+        # autoscale down
+        loads_items = list(ring.server_loads.items())
         if (
-            loads
+            loads_items
             and all(
-                l < math.floor(SERVER_CAPACITY * down_thresh_ratio) for _, l in loads
+                l < math.floor(SERVER_CAPACITY * down_thresh_ratio)
+                for _, l in loads_items
             )
             and len(ring.server_loads) > min_servers
         ):
-            # remove the least-loaded server
             to_remove = min(ring.server_loads.items(), key=lambda kv: kv[1])[0]
             ring.remove_server(to_remove)
+            autoscale["removed"] += 1
 
-    return _stats_from_ring(ring, len(keys))
+    return _detailed_stats_from_ring(ring, len(keys), total_attempts, autoscale)
 
 
 def run_all():
