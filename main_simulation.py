@@ -1,102 +1,93 @@
-# main_simulation.py
-
-import numpy as np
+import math
+from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM
+from data_generator import generate_uniform_keys
 from hashing_algorithms import BoundedHashRing_CH_BL, BoundedHashRing_RJ_CH
-from dlb_model import LearnedHashRing_DLB
-from data_generator import generate_uniform_keys, generate_zipfian_keys
-from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM, NUM_KEYS_SKEWED
-from collections import defaultdict
 
 
-def simulate_load(hashing_ring, keys):
-    """Runs a load simulation and records metrics."""
-    # Reset metrics and loads
-    hashing_ring.server_loads = defaultdict(int)
-    hashing_ring.key_assignments = {}
-
-    total_assigned = 0
-    total_search_cost = 0
-
-    # Ensure all specialized metrics are reset
-    if hasattr(hashing_ring, "total_cascades"):
-        hashing_ring.total_cascades = 0
-    if hasattr(hashing_ring, "total_jumps"):
-        hashing_ring.total_jumps = 0
-    if hasattr(hashing_ring, "total_predictions"):
-        hashing_ring.total_predictions = 0
-
-    for key in keys:
-        server, cost = hashing_ring.assign_key(key)
-
-        if server:
-            total_assigned += 1
-            total_search_cost += cost
-        else:
-            # System overload; stop processing keys
-            break
-
-    # Calculate load variance
-    loads = list(hashing_ring.server_loads.values())
-    if not loads:
-        return {}
-
-    avg_load = sum(loads) / len(loads)
-    variance = sum((l - avg_load) ** 2 for l in loads) / len(loads)
-
+def _stats_from_ring(ring, total_keys):
+    loads = list(ring.server_loads.values())
+    avg = sum(loads) / len(loads) if loads else 0
+    var = sum((l - avg) ** 2 for l in loads) / len(loads) if loads else 0
+    assigned = len(ring.key_assignments)
     return {
-        "algorithm": hashing_ring.__class__.__name__,
-        "total_keys": len(keys),
-        "assigned_keys": total_assigned,
-        "avg_search_cost": total_search_cost / max(1, total_assigned),
-        "load_variance": variance,
-        "full_servers": sum(1 for load in loads if load == hashing_ring.capacity),
-        "server_loads": loads,
+        "assigned": assigned,
+        "total_keys": total_keys,
+        "avg_load": avg,
+        "variance": var,
+        "loads": loads,
     }
 
 
-def run_comparison(keys, description):
-    """Initializes rings and runs the simulation."""
-    servers = [f"Server-{i}" for i in range(NUM_SERVERS)]
+def run_fixed_k_ch(keys):
+    ring = BoundedHashRing_CH_BL(capacity=SERVER_CAPACITY)
+    for i in range(NUM_SERVERS):
+        ring.add_server(f"S{i}")
+    for k in keys:
+        ring.assign_key(k)
+    return _stats_from_ring(ring, len(keys))
 
-    # Initialize all rings
-    ch_bl_ring = BoundedHashRing_CH_BL(capacity=SERVER_CAPACITY)
-    rj_ch_ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY)
 
-    # DLB must be initialized last as its init triggers model training
-    for s in servers:
-        ch_bl_ring.add_server(s)
-        rj_ch_ring.add_server(s)
+def run_fixed_k_rj(keys):
+    ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY, max_attempts=50)
+    for i in range(NUM_SERVERS):
+        ring.add_server(f"S{i}")
+    for k in keys:
+        ring.assign_key(k)
+    return _stats_from_ring(ring, len(keys))
 
-    # DLB Ring Initialization (Triggers Training)
-    dlb_ring = LearnedHashRing_DLB(capacity=SERVER_CAPACITY)
-    for s in servers:
-        dlb_ring.add_server(s)
 
-    print(f"\n--- Running {description} Simulation ---")
+def run_dynamic_k_rj(
+    keys,
+    min_servers=None,
+    max_servers=None,
+    up_thresh_ratio=0.8,
+    down_thresh_ratio=0.3,
+):
+    min_servers = min_servers or max(2, NUM_SERVERS // 2)
+    max_servers = max_servers or NUM_SERVERS
+    ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY, max_attempts=50)
+    # start with a small cluster
+    for i in range(min_servers):
+        ring.add_server(f"S{i}")
+    next_server_id = min_servers
 
-    results = [
-        simulate_load(ch_bl_ring, keys),
-        simulate_load(rj_ch_ring, keys),
-        simulate_load(dlb_ring, keys),
-    ]
+    for k in keys:
+        ring.assign_key(k)
+        # autoscale up: if any server >= up threshold and we can add
+        loads = list(ring.server_loads.values()) or [0]
+        if (
+            max(loads) >= math.ceil(SERVER_CAPACITY * up_thresh_ratio)
+            and len(ring.server_loads) < max_servers
+        ):
+            ring.add_server(f"S{next_server_id}")
+            next_server_id += 1
+        # autoscale down: if all servers below down threshold and we have > min
+        loads = list(ring.server_loads.items())
+        if (
+            loads
+            and all(
+                l < math.floor(SERVER_CAPACITY * down_thresh_ratio) for _, l in loads
+            )
+            and len(ring.server_loads) > min_servers
+        ):
+            # remove the least-loaded server
+            to_remove = min(ring.server_loads.items(), key=lambda kv: kv[1])[0]
+            ring.remove_server(to_remove)
 
-    # Print and compare results
-    for res in results:
-        print(f"\n{'-'*10} {res['algorithm']} {'-'*10}")
-        print(f"Total Keys Assigned: {res['assigned_keys']}/{res['total_keys']}")
-        print(f"Servers Overloaded: {res['full_servers']}")
-        print(f"Avg. Search/Cost: {res['avg_search_cost']:.4f}")
-        print(f"Load Variance: {res['load_variance']:.2f}")
+    return _stats_from_ring(ring, len(keys))
 
-    return results
+
+def run_all():
+    keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
+
+    fixed_ch_stats = run_fixed_k_ch(keys)
+    fixed_rj_stats = run_fixed_k_rj(keys)
+    dynamic_rj_stats = run_dynamic_k_rj(keys)
+
+    print("Fixed-k CH (first-clockwise):", fixed_ch_stats)
+    print("Fixed-k Random-Jump:", fixed_rj_stats)
+    print("Dynamic-k Random-Jump (autoscale):", dynamic_rj_stats)
 
 
 if __name__ == "__main__":
-
-    # --- PHASE 1: UNIFORM LOAD COMPARISON (CH-BL vs RJ-CH focus) ---
-    uniform_keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
-    run_comparison(uniform_keys, "UNIFORM LOAD")
-
-    # --- PHASE 2: SKEWED LOAD COMPARISON (DLB focus) ---
-    skewed_keys = generate_zipfian_keys(NUM_KEYS_SKEWED)
-    run_comparison(skewed_keys, "SKEWED LOAD (HOT KEYS)")
+    run_all()

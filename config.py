@@ -1,19 +1,17 @@
-# config.py
+# ...existing code...
+# Simulation / environment defaults
+NUM_SERVERS = 8
+SERVER_CAPACITY = 100
+NUM_KEYS_UNIFORM = 1000
+NUM_KEYS_SKEWED = 1000
 
-# --- HASHING CONFIGURATION ---
-HASH_SPACE_SIZE = 2**32  # Total size of the hash ring
-NUM_VIRTUAL_NODES = 100  # Virtual nodes per physical server for better balance
-SERVER_CAPACITY = 1000  # Bounded Load capacity for the simulation
+# Hash ring tuning
+NUM_VIRTUAL_NODES = 100
+HASH_SPACE_SIZE = 2**32
+MAX_RJ_ATTEMPTS = 50
 
-# --- SIMULATION CONFIGURATION ---
-NUM_SERVERS = 10  # Number of physical servers (bins)
-NUM_KEYS_UNIFORM = 8000  # Keys for uniform load test (must be < NUM_SERVERS * CAPACITY)
-NUM_KEYS_SKEWED = 8000  # Keys for skewed load test
-
-# --- RJ-CH CONFIGURATION ---
-MAX_RJ_ATTEMPTS = 100  # Max jumps before giving up
-
-# --- DLB (DEEP LEARNING) CONFIGURATION ---
-DLB_EPOCHS = 5  # Training epochs for the simplified model
-DLB_TRAINING_SIZE = 10000  # Number of samples to train the DLB model
-DLB_ZIPF_ALPHA = 1.2  # Alpha parameter for Zipf distribution (high skew)
+# DLB / training defaults (optional)
+DLB_EPOCHS = 1
+DLB_TRAINING_SIZE = 1000
+DLB_ZIPF_ALPHA = 1.5
+# ...existing code...

@@ -1,75 +1,33 @@
-# data_generator.py
-
-import random
 import numpy as np
-from config import DLB_ZIPF_ALPHA
+import random
+from config import NUM_KEYS_UNIFORM, DLB_ZIPF_ALPHA
 
 
-def generate_uniform_keys(num_keys):
-    """Generates a list of uniformly distributed unique keys."""
-    return [f"object_{i}" for i in range(num_keys)]
+def generate_uniform_keys(num_keys=NUM_KEYS_UNIFORM):
+    return [f"key_{i}" for i in range(num_keys)]
 
 
 def generate_zipfian_keys(num_keys, total_possible_keys=100000):
-    """
-    Generates keys following a Zipf (skewed) distribution.
-    A small number of 'hot keys' will be requested much more frequently.
-    """
-    # Keys are generated from a set of total_possible_keys
-
-    # Generate Zipfian random numbers (indices)
-    a = DLB_ZIPF_ALPHA  # Alpha > 1 means a heavy skew
-
-    # We use size=num_keys samples from a distribution of total_possible_keys items
-    # The output is a list of integers (indices)
-    zipf_indices = np.random.zipf(a, num_keys).astype(int)
-
-    # Clip to avoid errors if an index exceeds total_possible_keys
-    zipf_indices = np.clip(zipf_indices, 1, total_possible_keys)
-
-    # Convert indices back to key strings
-    return [f"key_{i}" for i in zipf_indices]
+    a = DLB_ZIPF_ALPHA
+    idx = np.random.zipf(a, size=num_keys).astype(int)
+    idx = np.clip(idx, 1, total_possible_keys)
+    return [f"key_{i}" for i in idx]
 
 
-def generate_training_data(num_samples, num_servers, capacity):
-    """
-    Generates training data (X, Y) for the DLB model.
-    X: [Hashed Key ID, Load1, Load2, ...]
-    Y: One-hot vector pointing to the ideal (min-loaded) server.
-
-    Since training must be fast, this uses the MIN-LOAD strategy as the 'Ground Truth'.
-    """
-
-    X = []
-    Y = []
-
-    server_loads = np.zeros(num_servers)
-
-    # Use a large number of unique key candidates to mimic a real environment
-    keys = generate_zipfian_keys(num_samples * 2)
-
-    for i in range(num_samples):
-        key = keys[i]
-
-        # 1. Input Features (X):
-        # We need a stable representation of the key for the NN.
-        # A simple one-hot encoding or hash is used here.
-        key_id_feature = hash(key) % 10000  # Simplified key feature
-
-        input_vector = [key_id_feature] + list(server_loads)
-        X.append(input_vector)
-
-        # 2. Target Label (Y): The ideal assignment (least loaded server)
-        min_load_index = np.argmin(server_loads)
-        target_vector = np.zeros(num_servers)
-        target_vector[min_load_index] = 1
-        Y.append(target_vector)
-
-        # 3. Simulate assignment and update load (critical for training realism)
-        server_loads[min_load_index] += 1
-
-        # Reset server loads occasionally to prevent saturation and keep the load dynamics realistic
-        if i % (num_servers * capacity) == 0 and i > 0:
-            server_loads = np.zeros(num_servers)
-
-    return np.array(X), np.array(Y)
+# optional: tiny generator used by DLB training (if needed)
+def generate_training_data(size, num_servers, server_capacity):
+    if num_servers <= 0:
+        raise ValueError("num_servers must be >= 1")
+    server_loads = np.zeros(num_servers, dtype=int)
+    X, Y = [], []
+    for _ in range(size):
+        # trivial feature: current loads -> one-hot for least-loaded
+        features = server_loads.copy()
+        label = np.zeros(num_servers, dtype=int)
+        label[int(np.argmin(server_loads))] = 1
+        X.append(np.concatenate(([0], features)))  # 0 placeholder for key-feature
+        Y.append(label)
+        # simulate an assignment
+        server_loads[int(np.argmin(server_loads))] += 1
+        server_loads = np.minimum(server_loads, server_capacity)
+    return np.array(X, dtype=float), np.array(Y, dtype=int)

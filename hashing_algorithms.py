@@ -1,5 +1,3 @@
-# hashing_algorithms.py
-
 import hashlib
 import bisect
 from collections import defaultdict
@@ -19,7 +17,7 @@ class ConsistentHashRing:
 
     def _hash(self, key):
         """Standard 32-bit hash function (SHA1 truncated)."""
-        return int(hashlib.sha1(key.encode()).hexdigest(), 16) % HASH_SPACE_SIZE
+        return int(hashlib.sha1(str(key).encode()).hexdigest(), 16) % HASH_SPACE_SIZE
 
     def add_server(self, server_name):
         """Adds a server (and its virtual replicas) to the ring."""
@@ -39,9 +37,8 @@ class ConsistentHashRing:
         if server_name in self.server_loads:
             del self.server_loads[server_name]
 
-        # Remove virtual nodes (simplistic removal, sorting is implicit via bisect)
         hashes_to_remove = [
-            h for h, name in self.server_map.items() if name == server_name
+            h for h, name in list(self.server_map.items()) if name == server_name
         ]
         for h in hashes_to_remove:
             if h in self.ring:
@@ -49,9 +46,9 @@ class ConsistentHashRing:
             if h in self.server_map:
                 del self.server_map[h]
 
-        # Clear removed keys from assignments
         for key in keys_to_reassign:
-            del self.key_assignments[key]
+            if key in self.key_assignments:
+                del self.key_assignments[key]
 
         return len(keys_to_reassign)
 
@@ -60,72 +57,100 @@ class ConsistentHashRing:
         key_hash = self._hash(key)
         return bisect.bisect_left(self.ring, key_hash)
 
+    def get_server_for_hash(self, h):
+        """Return server name for a given hash value (wraps around)."""
+        if not self.ring:
+            return None
+        idx = bisect.bisect_left(self.ring, h)
+        if idx == len(self.ring):
+            idx = 0
+        return self.server_map[self.ring[idx]]
+
 
 class BoundedHashRing_CH_BL(ConsistentHashRing):
-    """Implements CH-BL with the deterministic clockwise search (cascading)."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.total_cascades = 0
+    """Fixed-k CH: assign to first clockwise server with free capacity."""
 
     def assign_key(self, key):
-        """Attempts to assign a key using the deterministic clockwise search."""
+        h = self._hash(key)
         if not self.ring:
             return None, 0
-
-        start_idx = self.get_server_start_index(key)
-        num_virtual_nodes = len(self.ring)
-        search_count = 0
-
-        for i in range(num_virtual_nodes):
-            idx = (start_idx + i) % num_virtual_nodes
-            server_hash = self.ring[idx]
-            server_name = self.server_map[server_hash]
-
-            if self.server_loads[server_name] < self.capacity:
-                self.server_loads[server_name] += 1
-                self.key_assignments[key] = server_name
-                self.total_cascades += search_count
-                return server_name, search_count
-
-            search_count += 1
-
-        # All servers are full
-        return None, search_count
+        start = bisect.bisect_left(self.ring, h)
+        n = len(self.ring)
+        steps = 0
+        for i in range(n):
+            idx = (start + i) % n
+            server = self.server_map[self.ring[idx]]
+            if self.server_loads[server] < self.capacity:
+                self.server_loads[server] += 1
+                self.key_assignments[key] = server
+                return server, steps
+            steps += 1
+        return None, steps
 
 
 class BoundedHashRing_RJ_CH(ConsistentHashRing):
-    """Implements RJ-CH using re-hashing with the attempt number to 'jump'."""
+    """Random-Jump: try hashed jumps 'key#attempt' up to max_attempts."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.total_jumps = 0
+    def __init__(
+        self,
+        capacity=SERVER_CAPACITY,
+        vnodes=NUM_VIRTUAL_NODES,
+        max_attempts=MAX_RJ_ATTEMPTS,
+    ):
+        super().__init__(num_replicas=vnodes, capacity=capacity)
+        self.max_attempts = max_attempts
 
     def assign_key(self, key):
-        """Attempts to assign a key using RJ-CH's re-hashing ("jump") approach."""
         if not self.ring:
             return None, 0
+        server = self.get_server_for_hash(self._hash(key))
+        if server and self.server_loads[server] < self.capacity:
+            self.server_loads[server] += 1
+            self.key_assignments[key] = server
+            return server, 0
+        for attempt in range(1, self.max_attempts + 1):
+            attempt_key = f"{key}#{attempt}"
+            server = self.get_server_for_hash(self._hash(attempt_key))
+            if server and self.server_loads[server] < self.capacity:
+                self.server_loads[server] += 1
+                self.key_assignments[key] = server
+                return server, attempt
+        return None, self.max_attempts
 
-        key_base = key
 
-        for attempt in range(MAX_RJ_ATTEMPTS):
-            # The 'jump' hash: key + attempt number
-            current_key_name = f"{key_base}#{attempt}" if attempt > 0 else key_base
-            key_hash = self._hash(current_key_name)
+class BoundedHashRing_RehashThreshold(ConsistentHashRing):
+    """Rehash when chosen server load >= threshold_ratio * capacity."""
 
-            # Find the starting server for this jump
-            idx = bisect.bisect_left(self.ring, key_hash)
-            if idx == len(self.ring):
-                idx = 0
+    def __init__(
+        self,
+        capacity=SERVER_CAPACITY,
+        vnodes=NUM_VIRTUAL_NODES,
+        threshold_ratio=0.8,
+        max_attempts=MAX_RJ_ATTEMPTS,
+    ):
+        super().__init__(num_replicas=vnodes, capacity=capacity)
+        self.threshold_ratio = threshold_ratio
+        self.max_attempts = max_attempts
 
-            server_hash = self.ring[idx]
-            server_name = self.server_map[server_hash]
-
-            if self.server_loads[server_name] < self.capacity:
-                self.server_loads[server_name] += 1
-                self.key_assignments[key_base] = server_name
-                self.total_jumps += attempt
-                return server_name, attempt
-
-        # Max attempts reached
-        return None, MAX_RJ_ATTEMPTS
+    def assign_key(self, key):
+        if not self.ring:
+            return None, 0
+        capacity_threshold = int(self.capacity * self.threshold_ratio)
+        server = self.get_server_for_hash(self._hash(key))
+        if server and self.server_loads[server] < capacity_threshold:
+            self.server_loads[server] += 1
+            self.key_assignments[key] = server
+            return server, 0
+        for attempt in range(1, self.max_attempts + 1):
+            s = self.get_server_for_hash(self._hash(f"{key}#{attempt}"))
+            if s and self.server_loads[s] < capacity_threshold:
+                self.server_loads[s] += 1
+                self.key_assignments[key] = s
+                return s, attempt
+        candidates = [srv for srv, l in self.server_loads.items() if l < self.capacity]
+        if candidates:
+            least = min(candidates, key=lambda s: self.server_loads[s])
+            self.server_loads[least] += 1
+            self.key_assignments[key] = least
+            return least, self.max_attempts
+        return None, self.max_attempts
