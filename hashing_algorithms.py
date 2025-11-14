@@ -4,6 +4,9 @@ from collections import defaultdict
 from config import HASH_SPACE_SIZE, NUM_VIRTUAL_NODES, SERVER_CAPACITY, MAX_RJ_ATTEMPTS
 
 
+# TODO: Do we assign the query only to the servers that actually serve the website such as amazon.com
+# Right now we simply assign to a free server and assume that it can serve the correct website??
+# Is this needed to be changed?
 class ConsistentHashRing:
     """Base class for Consistent Hashing structure."""
 

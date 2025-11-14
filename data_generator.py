@@ -7,6 +7,8 @@ def generate_uniform_keys(num_keys=NUM_KEYS_UNIFORM):
     return [f"key_{i}" for i in range(num_keys)]
 
 
+# We use this function to generate keys with Zipfian distribution, which simulates real world web requests,
+# where a few keys are extremely popular and most are not.
 def generate_zipfian_keys(num_keys, total_possible_keys=100000):
     a = DLB_ZIPF_ALPHA
     idx = np.random.zipf(a, size=num_keys).astype(int)

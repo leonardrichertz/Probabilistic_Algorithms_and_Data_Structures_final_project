@@ -3,6 +3,9 @@ from tensorflow import keras
 from config import DLB_EPOCHS, DLB_TRAINING_SIZE, SERVER_CAPACITY
 from data_generator import generate_training_data
 
+# This file implements a minimal Learned (DLB) hashing ring using a simple DNN model.
+# We no longer use this in the main simulation, but it is kept here for reference.
+
 
 def create_dlb_model(num_servers):
     input_size = num_servers + 1
