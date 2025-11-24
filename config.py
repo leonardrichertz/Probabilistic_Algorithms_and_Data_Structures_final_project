@@ -1,4 +1,3 @@
-# ...existing code...
 # Simulation / environment defaults
 NUM_SERVERS = 8
 SERVER_CAPACITY = 100
@@ -14,4 +13,3 @@ MAX_RJ_ATTEMPTS = 50
 DLB_EPOCHS = 1
 DLB_TRAINING_SIZE = 1000
 DLB_ZIPF_ALPHA = 1.5
-# ...existing code...
