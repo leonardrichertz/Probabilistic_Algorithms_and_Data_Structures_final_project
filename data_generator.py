@@ -1,5 +1,4 @@
 import numpy as np
-import random
 from config import NUM_KEYS_UNIFORM, DLB_ZIPF_ALPHA
 
 

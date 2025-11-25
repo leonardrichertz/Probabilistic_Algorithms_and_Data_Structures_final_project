@@ -235,7 +235,7 @@ def run_all():
     fixed_ch_stats = run_fixed_k_ch(keys)
     fixed_rj_stats = run_fixed_k_rj(keys)
     dynamic_rj_stats = run_dynamic_k_rj(keys)
-    run_spike_experiment(steady_keys=500, spike_keys=3000, snapshot_interval=500)
+    run_spike_experiment(steady_keys=1000, spike_keys=8000, snapshot_interval=500)
 
     from createplots import plot_stats_comparison
 

@@ -157,3 +157,40 @@ class BoundedHashRing_RehashThreshold(ConsistentHashRing):
             self.key_assignments[key] = least
             return least, self.max_attempts
         return None, self.max_attempts
+
+    def get_natural_server_for_key(self, key):
+        """Find the server this key would naturally hash to (first clockwise)."""
+        if not self.ring:
+            return None
+        h = self._hash(key)
+        return self.get_server_for_hash(h)
+
+    # TODO: Delete item function, if the initial k servers have enough capacity, we can delete the key from the server that we created if we
+    # had to rehash it to another server. This would free up space on the original server. So we delete the key and then create a new one as soon as the
+    # Go over these function again.
+    def delete_key(self, key):
+        """Remove a key assignment and free up server capacity."""
+        if key in self.key_assignments:
+            server = self.key_assignments[key]
+            if server in self.server_loads:
+                self.server_loads[server] -= 1
+            del self.key_assignments[key]
+            return server
+        return None
+
+    def can_remove_empty_servers(self, protected_servers=None):
+        """Find servers that are empty and can be removed."""
+        protected_servers = protected_servers or set()
+        removable = []
+
+        for server, load in self.server_loads.items():
+            if load == 0 and server not in protected_servers:
+                removable.append(server)
+
+        return removable
+
+    def get_keys_on_server(self, server_name):
+        """Get all keys currently assigned to a specific server."""
+        return [
+            key for key, server in self.key_assignments.items() if server == server_name
+        ]
