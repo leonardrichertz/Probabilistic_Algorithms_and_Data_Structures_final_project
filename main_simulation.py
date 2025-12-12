@@ -1,7 +1,11 @@
 import math
 from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM, NUM_VIRTUAL_NODES
-from data_generator import generate_uniform_keys
-from hashing_algorithms import BoundedHashRing_CH_BL, BoundedHashRing_RJ_CH
+from data_generator import generate_uniform_keys, generate_zipfian_keys
+from hashing_algorithms import (
+    BoundedHashRing_CH_BL,
+    BoundedHashRing_RJ_CH,
+    BoundedHashRing_RehashThreshold,
+)
 import statistics
 
 
@@ -185,10 +189,11 @@ def run_dynamic_k_rj(
     max_servers=None,
     up_thresh_ratio=0.8,
     down_thresh_ratio=0.3,
+    idle_threshhold=None,
 ):
     min_servers = min_servers or max(2, NUM_SERVERS // 2)
     max_servers = max_servers or NUM_SERVERS
-    ring = BoundedHashRing_RJ_CH(
+    ring = BoundedHashRing_RehashThreshold(
         capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
     )
     # start with a small cluster
@@ -198,7 +203,7 @@ def run_dynamic_k_rj(
     autoscale = {"added": 0, "removed": 0}
     total_attempts = 0
 
-    for k in keys:
+    for t, k in enumerate(keys):
         _, cost = ring.assign_key(k)
         total_attempts += cost
 
@@ -226,15 +231,22 @@ def run_dynamic_k_rj(
             ring.remove_server(to_remove)
             autoscale["removed"] += 1
 
+        if idle_threshhold is not None and t % 50 == 0:
+            idle_servers = ring.shutdown_idle_servers(idle_threshhold)
+            if idle_servers:
+                autoscale["removed"] += len(idle_servers)
+
     return _detailed_stats_from_ring(ring, len(keys), total_attempts, autoscale)
 
 
 def run_all():
     keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
 
+    keys = generate_zipfian_keys(NUM_KEYS_UNIFORM)
+
     fixed_ch_stats = run_fixed_k_ch(keys)
     fixed_rj_stats = run_fixed_k_rj(keys)
-    dynamic_rj_stats = run_dynamic_k_rj(keys)
+    dynamic_rj_stats = run_dynamic_k_rj(keys, idle_threshhold=10)
     run_spike_experiment(steady_keys=1000, spike_keys=8000, snapshot_interval=500)
 
     from createplots import plot_stats_comparison
