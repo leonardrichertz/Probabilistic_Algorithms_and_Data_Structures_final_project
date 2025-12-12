@@ -8,6 +8,13 @@ from hashing_algorithms import (
 )
 import statistics
 
+from metrics import (
+    calculate_distribution_metrics,
+    calculate_reassignment_rate,
+    measure_lookup_time,
+    measure_memory_overhead,
+)
+
 
 # The jain index is a common metric for measuring load balance. It measures how evenly the load is distributed across servers.
 # A jain index of 1 indicates perfect balance (all servers have the same load), while lower values indicate more imbalance.
@@ -156,6 +163,7 @@ def _detailed_stats_from_ring(
         "avg_attempts": avg_attempts,
         "autoscale_events": autoscale_events or {"added": 0, "removed": 0},
         "loads": loads,
+        "ring": ring,
     }
 
 
@@ -239,6 +247,36 @@ def run_dynamic_k_rj(
     return _detailed_stats_from_ring(ring, len(keys), total_attempts, autoscale)
 
 
+def evaluate_metrics():
+    keys = generate_zipfian_keys(NUM_KEYS_UNIFORM, total_possible_keys=1000, alpha=1.5)
+
+    # Run simulations
+    fixed_ch_stats = run_fixed_k_ch(keys)
+    fixed_rj_stats = run_fixed_k_rj(keys)
+    dynamic_rj_stats = run_dynamic_k_rj(keys, idle_threshhold=10)
+
+    # Evaluate distribution metrics
+    for stats, label in zip(
+        [fixed_ch_stats, fixed_rj_stats, dynamic_rj_stats],
+        ["Fixed-k CH", "Fixed-k RJ", "Dynamic-k RJ"],
+    ):
+        metrics = calculate_distribution_metrics(stats["loads"])
+        print(f"{label} Distribution Metrics: {metrics}")
+
+    # Evaluate reassignment rate for dynamic scaling
+    old_assignments = dynamic_rj_stats["autoscale_events"]
+    dynamic_rj_stats_after_change = run_dynamic_k_rj(keys, idle_threshhold=10)
+    new_assignments = dynamic_rj_stats_after_change["autoscale_events"]
+    reassignment_rate = calculate_reassignment_rate(old_assignments, new_assignments)
+    print(f"Dynamic-k RJ Reassignment Rate: {reassignment_rate:.2%}")
+
+    # Evaluate computational efficiency
+    lookup_time = measure_lookup_time(dynamic_rj_stats["ring"], keys)
+    memory_overhead = measure_memory_overhead(dynamic_rj_stats["ring"])
+    print(f"Dynamic-k RJ Lookup Time: {lookup_time:.6f} seconds")
+    print(f"Dynamic-k RJ Memory Overhead: {memory_overhead} bytes")
+
+
 def run_all():
     keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
 
@@ -260,6 +298,8 @@ def run_all():
     print("Fixed-k CH (first-clockwise):", fixed_ch_stats)
     print("Fixed-k Random-Jump:", fixed_rj_stats)
     print("Dynamic-k Random-Jump (autoscale):", dynamic_rj_stats)
+
+    evaluate_metrics()
 
 
 if __name__ == "__main__":
