@@ -160,13 +160,32 @@ class BoundedHashRing_RehashThreshold(ConsistentHashRing):
                 self.server_loads[s] += 1
                 self.key_assignments[key] = s
                 return s, attempt
-        candidates = [srv for srv, l in self.server_loads.items() if l < self.capacity]
+        candidates = [
+            srv for srv, l in self.server_loads.items() if l < capacity_threshold
+        ]
         if candidates:
             least = min(candidates, key=lambda s: self.server_loads[s])
             self.server_loads[least] += 1
             self.key_assignments[key] = least
             return least, self.max_attempts
-        return None, self.max_attempts
+        # Autoscale: add a new server
+        new_server_name = f"S{len(self.server_loads)}"
+        print(f"Autoscaling: Adding new server {new_server_name}")
+        self.add_server(new_server_name)
+
+        self.rebalance_keys(new_server_name)
+
+        return self.assign_key(key)
+
+    def rebalance_keys(self, new_server):
+        """Redistribute keys to balance load after adding a new server."""
+        for key, server in list(self.key_assignments.items()):
+            # Check if the current server is overloaded
+            if self.server_loads[server] > self.capacity * self.threshold_ratio:
+                # Remove the key from the current server
+                self.delete_key(key)
+                # Reassign the key to the new server
+                self.assign_key(key)
 
     def get_natural_server_for_key(self, key):
         """Find the server this key would naturally hash to (first clockwise)."""

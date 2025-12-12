@@ -244,6 +244,9 @@ def run_dynamic_k_rj(
             if idle_servers:
                 autoscale["removed"] += len(idle_servers)
 
+        for server, load in ring.server_loads.items():
+            print(f"Time {t}: Server {server} has load {load}")
+
     return _detailed_stats_from_ring(ring, len(keys), total_attempts, autoscale)
 
 
@@ -278,13 +281,13 @@ def evaluate_metrics():
 
 
 def run_all():
-    keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
+    uniform_keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
 
-    keys = generate_zipfian_keys(NUM_KEYS_UNIFORM)
+    zipfian_keys = generate_zipfian_keys(NUM_KEYS_UNIFORM)
 
-    fixed_ch_stats = run_fixed_k_ch(keys)
-    fixed_rj_stats = run_fixed_k_rj(keys)
-    dynamic_rj_stats = run_dynamic_k_rj(keys, idle_threshhold=10)
+    fixed_ch_stats = run_fixed_k_ch(zipfian_keys)
+    fixed_rj_stats = run_fixed_k_rj(zipfian_keys)
+    dynamic_rj_stats = run_dynamic_k_rj(zipfian_keys, idle_threshhold=10)
     run_spike_experiment(steady_keys=1000, spike_keys=8000, snapshot_interval=500)
 
     from createplots import plot_stats_comparison
