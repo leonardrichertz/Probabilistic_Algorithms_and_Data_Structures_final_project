@@ -1,15 +1,12 @@
 # Simulation / environment defaults
-NUM_SERVERS = 3
+NUM_SERVERS = 25
 SERVER_CAPACITY = 30
-NUM_KEYS_UNIFORM = 10000
-NUM_KEYS_SKEWED = 1000
+NUM_KEYS_UNIFORM = 763
+NUM_KEYS_SKEWED = 763
 
 # Hash ring tuning
-NUM_VIRTUAL_NODES = 100
 HASH_SPACE_SIZE = 2**32
-MAX_RJ_ATTEMPTS = 50
+K = 50
 
-# DLB / training defaults (optional)
-DLB_EPOCHS = 1
-DLB_TRAINING_SIZE = 1000
+# Zipfian distribution parameter
 DLB_ZIPF_ALPHA = 1.5
