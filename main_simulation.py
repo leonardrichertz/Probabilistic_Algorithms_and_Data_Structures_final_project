@@ -18,6 +18,7 @@ from metrics import (
     measure_lookup_time,
     measure_memory_overhead,
 )
+import csv
 
 
 # The jain index is a common metric for measuring load balance. It measures how evenly the load is distributed across servers.
@@ -226,7 +227,57 @@ def run_multiple_simulations():
             out_prefix=f"uniform_comparison_multiplier_{multiplier}",
         )
 
+    save_results_to_csv("skewed_results.csv", skewed_results)
+    save_results_to_csv("uniform_results.csv", uniform_results)
+
     return skewed_results, uniform_results
+
+
+def save_results_to_csv(filename, results):
+    """Save simulation results to a CSV file."""
+    with open(filename, mode="w", newline="") as file:
+        writer = csv.writer(file)
+
+        # Write the header
+        writer.writerow(
+            [
+                "Multiplier",
+                "Algorithm",
+                "Assigned",
+                "Avg Load",
+                "Stddev",
+                "Variance",
+                "Max Load",
+                "Jain Index",
+                "Imbalance Ratio",
+                "Avg Attempts",
+                "Avg Hashes",
+                "Avg Insertion Time",
+            ]
+        )
+
+        # Write the data
+        for result in results:
+            multiplier = result["multiplier"]
+            for algorithm, stats in result.items():
+                if algorithm == "multiplier":
+                    continue
+                writer.writerow(
+                    [
+                        multiplier,
+                        algorithm,
+                        stats["assigned"],
+                        stats["avg_load"],
+                        stats["stddev"],
+                        stats["variance"],
+                        stats["max_load"],
+                        stats["jain_index"],
+                        stats["imbalance_ratio"],
+                        stats["avg_attempts"],
+                        stats["avg_hashes"],
+                        stats["avg_insertion_time"],
+                    ]
+                )
 
 
 # Call the function to run the simulations
