@@ -1,5 +1,12 @@
-import math
-from config import NUM_SERVERS, SERVER_CAPACITY, NUM_KEYS_UNIFORM, NUM_VIRTUAL_NODES
+from time import time
+from config import (
+    DLB_ZIPF_ALPHA,
+    NUM_KEYS_SKEWED,
+    NUM_SERVERS,
+    SERVER_CAPACITY,
+    NUM_KEYS_UNIFORM,
+    K,
+)
 from data_generator import generate_uniform_keys, generate_zipfian_keys
 from hashing_algorithms import (
     BoundedHashRing_CH_BL,
@@ -27,112 +34,13 @@ def _jain_index(loads):
     return (s * s) / (n * s2) if s2 > 0 else 0.0
 
 
-def _snapshot(ring):
-    loads = list(ring.server_loads.values()) or [0]
-    n = len(loads)
-    avg = sum(loads) / n if loads else 0
-    mx = max(loads) if loads else 0
-    percent_full = sum(1 for l in loads if l >= ring.capacity) / max(1, n)
-    return {
-        "num_servers": n,
-        "avg_load": avg,
-        "max_load": mx,
-        "percent_full": percent_full,
-        "jain": _jain_index(loads),
-    }
-
-
-def run_spike_experiment(
-    steady_keys=500,
-    spike_keys=2000,
-    snapshot_interval=250,
-    up_thresh=0.8,
-    down_thresh=0.3,
-):
-    # generate simple keystreams: steady then spike (same per-key rate modeled by counts)
-    steady = generate_uniform_keys(steady_keys)
-    spike = generate_uniform_keys(
-        spike_keys
-    )  # use same distribution; you can use Zipf for hotspots
-    keys = steady + spike
-
-    # fixed CH
-    fixed = BoundedHashRing_CH_BL(capacity=SERVER_CAPACITY)
-    for i in range(NUM_SERVERS):
-        fixed.add_server(f"S{i}")
-    fixed_tseries = []
-    for i, k in enumerate(keys, 1):
-        fixed.assign_key(k)
-        if i % snapshot_interval == 0 or i == len(steady) or i == len(keys):
-            fixed_tseries.append((i, _snapshot(fixed)))
-
-    # fixed RJ
-    fixed_rj = BoundedHashRing_RJ_CH(
-        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
-    )
-    for i in range(NUM_SERVERS):
-        fixed_rj.add_server(f"S{i}")
-    fixed_rj_tseries = []
-    for i, k in enumerate(keys, 1):
-        fixed_rj.assign_key(k)
-        if i % snapshot_interval == 0 or i == len(steady) or i == len(keys):
-            fixed_rj_tseries.append((i, _snapshot(fixed_rj)))
-
-    # dynamic RJ (autoscale up when any server >= up_thresh*capacity)
-    min_servers = max(2, NUM_SERVERS // 2)
-    max_servers = NUM_SERVERS * 2
-    dyn = BoundedHashRing_RJ_CH(
-        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
-    )
-    for i in range(min_servers):
-        dyn.add_server(f"S{i}")
-    next_id = min_servers
-    autoscale = {"added": 0, "removed": 0}
-    dyn_tseries = []
-    for i, k in enumerate(keys, 1):
-        dyn.assign_key(k)
-        loads = list(dyn.server_loads.values()) or [0]
-        # simple immediate up-scale policy
-        if (
-            max(loads) >= math.ceil(SERVER_CAPACITY * up_thresh)
-            and len(dyn.server_loads) < max_servers
-        ):
-            dyn.add_server(f"S{next_id}")
-            next_id += 1
-            autoscale["added"] += 1
-        # simple down-scale policy (only when all very low)
-        if (
-            all(l < math.floor(SERVER_CAPACITY * down_thresh) for l in loads)
-            and len(dyn.server_loads) > min_servers
-        ):
-            to_remove = min(dyn.server_loads.items(), key=lambda kv: kv[1])[0]
-            dyn.remove_server(to_remove)
-            autoscale["removed"] += 1
-        if i % snapshot_interval == 0 or i == len(steady) or i == len(keys):
-            snap = _snapshot(dyn)
-            snap["autoscale"] = dict(autoscale)
-            dyn_tseries.append((i, snap))
-
-    # print concise time series
-    def print_series(name, series):
-        print(f"\n{name} snapshots (index, num_servers, avg, max, %full, jain):")
-        for idx, s in series:
-            print(
-                f"{idx:6d} | {s['num_servers']:2d} | avg {s['avg_load']:.2f} | max {s['max_load']:2d} | %full {s['percent_full']:.2f} | jain {s['jain']:.3f}"
-                + (
-                    f" | autoscale +{s.get('autoscale',{}).get('added',0)}"
-                    if "autoscale" in s
-                    else ""
-                )
-            )
-
-    print_series("Fixed-CH", fixed_tseries)
-    print_series("Fixed-RJ", fixed_rj_tseries)
-    print_series("Dynamic-RJ", dyn_tseries)
-
-
 def _detailed_stats_from_ring(
-    ring, total_keys, total_attempts=0, autoscale_events=None
+    ring,
+    total_keys,
+    total_attempts=0,
+    total_hashes=0,
+    avg_insertion_time=0,
+    autoscale_events=None,
 ):
     loads = list(ring.server_loads.values())
     n = len(loads) or 1
@@ -147,6 +55,7 @@ def _detailed_stats_from_ring(
     jain = _jain_index(loads)
     imbalance = mx / avg if avg > 0 else float("inf")
     avg_attempts = total_attempts / max(1, total_assigned)
+    avg_hashes = total_hashes / max(1, total_assigned)
 
     return {
         "assigned": total_assigned,
@@ -161,102 +70,98 @@ def _detailed_stats_from_ring(
         "jain_index": jain,
         "imbalance_ratio": imbalance,
         "avg_attempts": avg_attempts,
+        "avg_hashes": avg_hashes,
+        "avg_insertion_time": avg_insertion_time,
         "autoscale_events": autoscale_events or {"added": 0, "removed": 0},
         "loads": loads,
         "ring": ring,
     }
 
 
+# Fixed-k CH (first clockwise)
 def run_fixed_k_ch(keys):
     ring = BoundedHashRing_CH_BL(capacity=SERVER_CAPACITY)
     for i in range(NUM_SERVERS):
         ring.add_server(f"S{i}")
     total_attempts = 0
+    total_hashes = 0
+    total_insertion_time = 0
+
     for k in keys:
-        _, cost = ring.assign_key(k)
+        start_time = time()
+        _, cost, hashes = ring.assign_key(k)
+        end_time = time()
         total_attempts += cost
-    return _detailed_stats_from_ring(ring, len(keys), total_attempts)
+        total_hashes += hashes
+        total_insertion_time += end_time - start_time
 
+    avg_insertion_time = total_insertion_time / len(keys) if keys else 0
 
-def run_fixed_k_rj(keys):
-    ring = BoundedHashRing_RJ_CH(
-        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
+    return _detailed_stats_from_ring(
+        ring,
+        len(keys),
+        total_attempts,
+        total_hashes,
+        avg_insertion_time,
+        autoscale_events=None,
     )
+
+
+# Fixed-k RJ (Random-Jump)
+def run_fixed_k_rj(keys):
+    ring = BoundedHashRing_RJ_CH(capacity=SERVER_CAPACITY, k=K)
+    for i in range(NUM_SERVERS):
+        ring.add_server(f"S{i}")
+    total_hashes = 0
+    total_attempts = 0
+    total_insertion_time = 0
+
+    for k in keys:
+        start_time = time()
+        _, cost, hashes = ring.assign_key(k)
+        end_time = time()
+        total_attempts += cost
+        total_hashes += hashes
+        total_insertion_time += end_time - start_time
+
+    avg_insertion_time = total_insertion_time / len(keys) if keys else 0
+
+    return _detailed_stats_from_ring(
+        ring, len(keys), total_attempts, total_hashes, avg_insertion_time
+    )
+
+
+# Dynamic-k RJ (autoscaling) -> we find the best server and if that doesn't satisfy threshold, we rehash up to k times
+def run_dynamic_k_rj(keys):
+    ring = BoundedHashRing_RehashThreshold(capacity=SERVER_CAPACITY, k=K)
     for i in range(NUM_SERVERS):
         ring.add_server(f"S{i}")
     total_attempts = 0
+    total_hashes = 0
+    total_insertion_time = 0
+
     for k in keys:
-        _, cost = ring.assign_key(k)
+        start_time = time()
+        _, cost, hashes = ring.assign_key(k)
+        end_time = time()
         total_attempts += cost
-    return _detailed_stats_from_ring(ring, len(keys), total_attempts)
+        total_hashes += hashes
+        total_insertion_time += end_time - start_time
 
+    avg_insertion_time = total_insertion_time / len(keys) if keys else 0
 
-def run_dynamic_k_rj(
-    keys,
-    min_servers=None,
-    max_servers=None,
-    up_thresh_ratio=0.8,
-    down_thresh_ratio=0.3,
-    idle_threshhold=None,
-):
-    min_servers = min_servers or max(2, NUM_SERVERS // 2)
-    max_servers = max_servers or NUM_SERVERS
-    ring = BoundedHashRing_RehashThreshold(
-        capacity=SERVER_CAPACITY, vnodes=NUM_VIRTUAL_NODES, max_attempts=50
+    return _detailed_stats_from_ring(
+        ring, len(keys), total_attempts, total_hashes, avg_insertion_time
     )
-    # start with a small cluster
-    for i in range(min_servers):
-        ring.add_server(f"S{i}")
-    next_server_id = min_servers
-    autoscale = {"added": 0, "removed": 0}
-    total_attempts = 0
-
-    for t, k in enumerate(keys):
-        _, cost = ring.assign_key(k)
-        total_attempts += cost
-
-        # autoscale up
-        loads = list(ring.server_loads.values()) or [0]
-        if (
-            max(loads) >= math.ceil(SERVER_CAPACITY * up_thresh_ratio)
-            and len(ring.server_loads) < max_servers
-        ):
-            ring.add_server(f"S{next_server_id}")
-            next_server_id += 1
-            autoscale["added"] += 1
-
-        # autoscale down
-        loads_items = list(ring.server_loads.items())
-        if (
-            loads_items
-            and all(
-                l < math.floor(SERVER_CAPACITY * down_thresh_ratio)
-                for _, l in loads_items
-            )
-            and len(ring.server_loads) > min_servers
-        ):
-            to_remove = min(ring.server_loads.items(), key=lambda kv: kv[1])[0]
-            ring.remove_server(to_remove)
-            autoscale["removed"] += 1
-
-        if idle_threshhold is not None and t % 50 == 0:
-            idle_servers = ring.shutdown_idle_servers(idle_threshhold)
-            if idle_servers:
-                autoscale["removed"] += len(idle_servers)
-
-        for server, load in ring.server_loads.items():
-            print(f"Time {t}: Server {server} has load {load}")
-
-    return _detailed_stats_from_ring(ring, len(keys), total_attempts, autoscale)
 
 
 def evaluate_metrics():
-    keys = generate_zipfian_keys(NUM_KEYS_UNIFORM, total_possible_keys=1000, alpha=1.5)
+    keys = generate_zipfian_keys(NUM_KEYS_SKEWED, total_possible_keys=1000, alpha=1.5)
 
     # Run simulations
     fixed_ch_stats = run_fixed_k_ch(keys)
     fixed_rj_stats = run_fixed_k_rj(keys)
-    dynamic_rj_stats = run_dynamic_k_rj(keys, idle_threshhold=10)
+    dynamic_rj_stats = run_dynamic_k_rj(keys)
 
     # Evaluate distribution metrics
     for stats, label in zip(
@@ -268,7 +173,7 @@ def evaluate_metrics():
 
     # Evaluate reassignment rate for dynamic scaling
     old_assignments = dynamic_rj_stats["autoscale_events"]
-    dynamic_rj_stats_after_change = run_dynamic_k_rj(keys, idle_threshhold=10)
+    dynamic_rj_stats_after_change = run_dynamic_k_rj(keys)
     new_assignments = dynamic_rj_stats_after_change["autoscale_events"]
     reassignment_rate = calculate_reassignment_rate(old_assignments, new_assignments)
     print(f"Dynamic-k RJ Reassignment Rate: {reassignment_rate:.2%}")
@@ -280,30 +185,63 @@ def evaluate_metrics():
     print(f"Dynamic-k RJ Memory Overhead: {memory_overhead} bytes")
 
 
-def run_all():
-    uniform_keys = generate_uniform_keys(NUM_KEYS_UNIFORM)
+def run_multiple_simulations():
+    key_multipliers = [0.5, 0.75, 1.0, 1.5, 2.0]
+    skewed_results = []
+    uniform_results = []
 
-    zipfian_keys = generate_zipfian_keys(NUM_KEYS_UNIFORM)
+    for multiplier in key_multipliers:
+        num_keys = int(multiplier * NUM_KEYS_SKEWED)
+        skewed_keys = generate_zipfian_keys(num_keys)
+        uniform_keys = generate_uniform_keys(num_keys)
 
-    fixed_ch_stats = run_fixed_k_ch(zipfian_keys)
-    fixed_rj_stats = run_fixed_k_rj(zipfian_keys)
-    dynamic_rj_stats = run_dynamic_k_rj(zipfian_keys, idle_threshhold=10)
-    run_spike_experiment(steady_keys=1000, spike_keys=8000, snapshot_interval=500)
+        skewed_fixed_ch_stats = run_fixed_k_ch(skewed_keys)
+        skewed_fixed_rj_stats = run_fixed_k_rj(skewed_keys)
+        skewed_dynamic_rj_stats = run_dynamic_k_rj(skewed_keys)
 
-    from createplots import plot_stats_comparison
+        uniform_fixed_ch_stats = run_fixed_k_ch(uniform_keys)
+        uniform_fixed_rj_stats = run_fixed_k_rj(uniform_keys)
+        uniform_dynamic_rj_stats = run_dynamic_k_rj(uniform_keys)
 
-    plot_stats_comparison(
-        [fixed_ch_stats, fixed_rj_stats, dynamic_rj_stats],
-        labels=["Fixed-k CH", "Fixed-k RJ", "Dynamic-k RJ"],
-        out_prefix="hashing_comparison",
-    )
+        skewed_results.append(
+            {
+                "multiplier": multiplier,
+                "fixed_ch": skewed_fixed_ch_stats,
+                "fixed_rj": skewed_fixed_rj_stats,
+                "dynamic_rj": skewed_dynamic_rj_stats,
+            }
+        )
 
-    print("Fixed-k CH (first-clockwise):", fixed_ch_stats)
-    print("Fixed-k Random-Jump:", fixed_rj_stats)
-    print("Dynamic-k Random-Jump (autoscale):", dynamic_rj_stats)
+        uniform_results.append(
+            {
+                "multiplier": multiplier,
+                "fixed_ch": uniform_fixed_ch_stats,
+                "fixed_rj": uniform_fixed_rj_stats,
+                "dynamic_rj": uniform_dynamic_rj_stats,
+            }
+        )
 
-    evaluate_metrics()
+        # Generate plots for each run
+        from createplots import plot_stats_comparison
+
+        plot_stats_comparison(
+            [skewed_fixed_ch_stats, skewed_fixed_rj_stats, skewed_dynamic_rj_stats],
+            labels=["Skewed Fixed-k CH", "Skewed Fixed-k RJ", "Skewed Dynamic-k RJ"],
+            out_prefix=f"skewed_comparison_multiplier_{multiplier}",
+        )
+
+        plot_stats_comparison(
+            [uniform_fixed_ch_stats, uniform_fixed_rj_stats, uniform_dynamic_rj_stats],
+            labels=["Uniform Fixed-k CH", "Uniform Fixed-k RJ", "Uniform Dynamic-k RJ"],
+            out_prefix=f"uniform_comparison_multiplier_{multiplier}",
+        )
+
+    return skewed_results, uniform_results
 
 
+# Call the function to run the simulations
 if __name__ == "__main__":
-    run_all()
+    skewed_results, uniform_results = run_multiple_simulations()
+    print("Skewed Results:", skewed_results)
+    print("Uniform Results:", uniform_results)
+    evaluate_metrics()

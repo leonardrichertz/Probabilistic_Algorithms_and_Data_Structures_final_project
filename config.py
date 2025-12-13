@@ -5,8 +5,8 @@ NUM_KEYS_UNIFORM = 763
 NUM_KEYS_SKEWED = 763
 
 # Hash ring tuning
-NUM_VIRTUAL_NODES = 100
 HASH_SPACE_SIZE = 2**32
-MAX_RJ_ATTEMPTS = 50
+K = 50
 
+# Zipfian distribution parameter
 DLB_ZIPF_ALPHA = 1.5

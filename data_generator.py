@@ -15,7 +15,6 @@ def generate_zipfian_keys(num_keys, total_possible_keys=100000, alpha=DLB_ZIPF_A
     return [f"key_{i}" for i in idx]
 
 
-# optional: tiny generator used by DLB training (if needed)
 def generate_training_data(size, num_servers, server_capacity):
     if num_servers <= 0:
         raise ValueError("num_servers must be >= 1")
