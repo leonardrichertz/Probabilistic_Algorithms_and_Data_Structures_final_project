@@ -26,27 +26,6 @@ def calculate_distribution_metrics(server_loads):
     }
 
 
-def calculate_reassignment_rate(old_assignments, new_assignments):
-    """
-    Calculate the reassignment rate when the cluster changes.
-
-    Args:
-        old_assignments (dict): Key-to-server assignments before the change.
-        new_assignments (dict): Key-to-server assignments after the change.
-
-    Returns:
-        float: Reassignment rate (percentage of keys reassigned).
-    """
-    total_keys = len(old_assignments)
-    if total_keys == 0:
-        return 0.0
-
-    reassigned_keys = sum(
-        1 for key in old_assignments if old_assignments[key] != new_assignments.get(key)
-    )
-    return reassigned_keys / total_keys
-
-
 def measure_lookup_time(ring, keys):
     """
     Measure the average lookup time for a set of keys.

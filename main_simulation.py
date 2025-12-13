@@ -1,10 +1,8 @@
 from time import time
 from config import (
-    DLB_ZIPF_ALPHA,
-    NUM_KEYS_SKEWED,
+    NUM_KEYS,
     NUM_SERVERS,
     SERVER_CAPACITY,
-    NUM_KEYS_UNIFORM,
     K,
 )
 from data_generator import generate_uniform_keys, generate_zipfian_keys
@@ -17,7 +15,6 @@ import statistics
 
 from metrics import (
     calculate_distribution_metrics,
-    calculate_reassignment_rate,
     measure_lookup_time,
     measure_memory_overhead,
 )
@@ -156,7 +153,7 @@ def run_dynamic_k_rj(keys):
 
 
 def evaluate_metrics():
-    keys = generate_zipfian_keys(NUM_KEYS_SKEWED, total_possible_keys=1000, alpha=1.5)
+    keys = generate_zipfian_keys(NUM_KEYS, total_possible_keys=1000, alpha=1.5)
 
     # Run simulations
     fixed_ch_stats = run_fixed_k_ch(keys)
@@ -171,13 +168,6 @@ def evaluate_metrics():
         metrics = calculate_distribution_metrics(stats["loads"])
         print(f"{label} Distribution Metrics: {metrics}")
 
-    # Evaluate reassignment rate for dynamic scaling
-    old_assignments = dynamic_rj_stats["autoscale_events"]
-    dynamic_rj_stats_after_change = run_dynamic_k_rj(keys)
-    new_assignments = dynamic_rj_stats_after_change["autoscale_events"]
-    reassignment_rate = calculate_reassignment_rate(old_assignments, new_assignments)
-    print(f"Dynamic-k RJ Reassignment Rate: {reassignment_rate:.2%}")
-
     # Evaluate computational efficiency
     lookup_time = measure_lookup_time(dynamic_rj_stats["ring"], keys)
     memory_overhead = measure_memory_overhead(dynamic_rj_stats["ring"])
@@ -191,7 +181,7 @@ def run_multiple_simulations():
     uniform_results = []
 
     for multiplier in key_multipliers:
-        num_keys = int(multiplier * NUM_KEYS_SKEWED)
+        num_keys = int(multiplier * NUM_KEYS)
         skewed_keys = generate_zipfian_keys(num_keys)
         uniform_keys = generate_uniform_keys(num_keys)
 

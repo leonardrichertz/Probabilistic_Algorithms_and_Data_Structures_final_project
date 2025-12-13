@@ -1,8 +1,8 @@
 import numpy as np
-from config import NUM_KEYS_UNIFORM, DLB_ZIPF_ALPHA
+from config import NUM_KEYS, DLB_ZIPF_ALPHA
 
 
-def generate_uniform_keys(num_keys=NUM_KEYS_UNIFORM):
+def generate_uniform_keys(num_keys=NUM_KEYS):
     return [f"key_{i}" for i in range(num_keys)]
 
 
